@@ -93,8 +93,10 @@ func dayStart(ts int64) int64 {
 	).UnixMilli()
 }
 
-func SplitEnergyByDay(src model.MqttEnergy) []model.MqttEnergy {
-	var result []model.MqttEnergy
+func SplitEnergyByDay(src model.MqttEnergy) map[string][]model.MqttEnergy {
+	var result map[string][]model.MqttEnergy
+
+	result = make(map[string][]model.MqttEnergy)
 
 	startDay := dayStart(src.Start)
 	endDay := dayStart(src.End)
@@ -132,11 +134,22 @@ func SplitEnergyByDay(src model.MqttEnergy) []model.MqttEnergy {
 		}
 
 		if len(dayData) > 0 {
-			result = append(result, model.MqttEnergy{
+			bucketName := time.UnixMilli(startDay).Format("200601")
+			if _, ok := result[bucketName]; !ok {
+				result[bucketName] = make([]model.MqttEnergy, 0)
+			}
+
+			result[bucketName] = append(result[bucketName], model.MqttEnergy{
 				Start: dayStartTs,
 				End:   dayEndTs - int64(15*60*1000),
 				Data:  dayData,
 			})
+
+			//result = append(result, model.MqttEnergy{
+			//	Start: dayStartTs,
+			//	End:   dayEndTs - int64(15*60*1000),
+			//	Data:  dayData,
+			//})
 		}
 	}
 
@@ -154,15 +167,17 @@ func (tmw *TenantEnergyImporter) Import(data *model.MqttEnergyMessage) error {
 
 		groupedEnergy := SplitEnergyByDay(data.Energy[i])
 		var _wg = sync.WaitGroup{}
-		for n := range groupedEnergy {
-			_wg.Add(1)
-			go func(e *model.MqttEnergy) {
-				defer _wg.Done()
-				if err := store.StoreEnergyV2(tmw.db[data.EcId], data.Meter.MeteringPoint, e); err != nil {
-					glog.Errorf("Error storing Energy: %v (Metering-Point: %s)", err, data.Meter.MeteringPoint)
-					return
-				}
-			}(&groupedEnergy[n])
+		for bn, b := range groupedEnergy {
+			for n := range b {
+				_wg.Add(1)
+				go func(e *model.MqttEnergy) {
+					defer _wg.Done()
+					if err := store.StoreEnergyV2(tmw.db[data.EcId], bn, data.Meter.MeteringPoint, e); err != nil {
+						glog.Errorf("Error storing Energy: %v (Metering-Point: %s)", err, data.Meter.MeteringPoint)
+						return
+					}
+				}(&b[n])
+			}
 		}
 		_wg.Wait()
 	}

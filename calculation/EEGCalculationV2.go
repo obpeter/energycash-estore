@@ -1,20 +1,98 @@
 package calculation
 
 import (
+	"fmt"
+	"math"
+	"time"
+
 	"at.ourproject/energystore/model"
 	"at.ourproject/energystore/store"
 	"at.ourproject/energystore/store/ebow"
 	"at.ourproject/energystore/utils"
-	"fmt"
 	"github.com/golang/glog"
-	"math"
-	"time"
 )
+
+type ValueIterator interface {
+	Next(result interface{}) bool
+}
+
+type calcResults struct {
+	rAlloc *model.Matrix
+	rCons  *model.Matrix
+	rProd  *model.Matrix
+	rDist  *model.Matrix
+	rShar  *model.Matrix
+	pSum   float64
+}
+
+func newCalcResult(metaInfo *model.CounterPointMetaInfo) *calcResults {
+	return &calcResults{
+		rCons:  model.NewMatrix(metaInfo.ConsumerCount, 1),
+		rAlloc: model.NewMatrix(metaInfo.ConsumerCount, 1),
+		rProd:  model.NewMatrix(metaInfo.ProducerCount, 1),
+		rDist:  model.NewMatrix(metaInfo.ProducerCount, 1),
+		rShar:  model.NewMatrix(metaInfo.ConsumerCount, 1),
+		pSum:   0,
+	}
+}
 
 type reportValues struct {
 	meters           map[string][]*model.MeterReport
 	totalProduction  *float64
 	totalConsumption *float64
+}
+
+type AllocationHandlerV2 func(*model.Matrix, *model.Matrix) (*model.Matrix, *model.Matrix, *model.Matrix)
+
+func appendResults(line *model.RawSourceLine, allocFunc AllocationHandlerV2, results *calcResults) error {
+
+	consumerMatrix, producerMatrix := utils.ConvertLineToMatrix(line)
+	m, s, p := allocFunc(consumerMatrix, producerMatrix)
+
+	consumerUnitMatix := model.MakeMatrix(make([]float64, 3), 3, 1)
+	consumerUnitMatix.SetElm(0, 0, 1)
+
+	producerUnitMatix := model.MakeMatrix(make([]float64, 2), 2, 1)
+	producerUnitMatix.SetElm(0, 0, 1)
+
+	consumed := model.Multiply(consumerMatrix, consumerUnitMatix)
+	produced := model.Multiply(producerMatrix, producerUnitMatix)
+
+	if results.rCons == nil {
+		results.rCons = model.NewCopiedMatrixFromElements(line.Consumers, len(line.Consumers), 1)
+	} else {
+		//results.rCons.Add(model.MakeMatrix(line.Consumers, len(line.Consumers), 1))
+		results.rCons.Add(consumed)
+	}
+
+	if results.rProd == nil {
+		results.rProd = model.NewCopiedMatrixFromElements(line.Producers, len(line.Producers), 1)
+	} else {
+		//results.rProd.Add(model.MakeMatrix(line.Producers, len(line.Producers), 1))
+		results.rProd.Add(produced)
+	}
+
+	if results.rAlloc == nil {
+		results.rAlloc = model.NewCopiedMatrixFromElements(m.Elements, m.CountRows(), m.CountCols())
+	} else {
+		results.rAlloc.Add(m)
+	}
+
+	if results.rDist == nil {
+		results.rDist = model.NewCopiedMatrixFromElements(p.Elements, p.CountRows(), p.CountCols())
+	} else {
+		results.rDist.Add(p)
+	}
+
+	if results.rShar == nil {
+		results.rShar = model.NewCopiedMatrixFromElements(s.Elements, s.CountRows(), s.CountCols())
+	} else {
+		results.rShar.Add(s)
+	}
+	results.pSum += utils.Sum(produced.Elements)
+
+	return nil
+
 }
 
 var EnsureIntermediateSlice = func(orig []model.Recort, size int) []model.Recort {
@@ -167,6 +245,16 @@ func calcDailyScope(iter ValueIterator, allocFunc AllocationHandlerV2, metaInfo 
 
 func CalculateMonthlyPeriodV2(db *ebow.BowStorage, report *model.ReportResponse, allocFunc AllocationHandlerV2, year, segment int) error {
 	rowPrefix := "CP"
+	start, end, err := utils.PeriodToStartEndTime(year, segment, "YM")
+	if err != nil {
+		return err
+	}
+
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return err
+	}
+
 	cpMeta, metaInfo, err := store.GetMetaInfo(db)
 	if err != nil {
 		return err
@@ -174,91 +262,145 @@ func CalculateMonthlyPeriodV2(db *ebow.BowStorage, report *model.ReportResponse,
 
 	reportValues := ConvertToMeterMap(report)
 
-	iter := db.GetLinePrefix(fmt.Sprintf("%s/%d/%.2d/", rowPrefix, year, segment))
-	defer iter.Close()
+	for _, bucketName := range buckets {
+		iter, err := db.GetBucket(bucketName)
+		if err != nil {
+			glog.V(3).Infof("Bucket %s not found: %s", bucketName, err.Error())
+			continue
+		}
 
-	startDate := time.Date(year, time.Month(segment), 1, 0, 0, 0, 0, time.Local)
-	return calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, startDate, func(currentDate time.Time) int {
-		return currentDate.Day()
-	})
+		err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, start, func(currentDate time.Time) int {
+			return currentDate.Day()
+		})
+		iter.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func CalculateBiAnnualPeriodV2(db *ebow.BowStorage, report *model.ReportResponse, allocFunc AllocationHandlerV2, year, segment int) error {
 	rowPrefix := "CP"
+	start, end, err := utils.PeriodToStartEndTime(year, segment, "YH")
+	if err != nil {
+		return err
+	}
+
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return err
+	}
+
 	cpMeta, metaInfo, err := store.GetMetaInfo(db)
 	if err != nil {
 		return err
 	}
 
 	reportValues := ConvertToMeterMap(report)
+	_, startWeek := start.ISOWeek()
 
-	iter := db.GetLineRange(rowPrefix,
-		fmt.Sprintf("%.4d/%.2d/", year, ((segment-1)*6)+1),
-		fmt.Sprintf("%.4d/%.2d/", year, segment*6),
-	)
-	defer iter.Close()
+	for _, bucketName := range buckets {
+		iter, err := db.GetBucket(bucketName)
+		if err != nil {
+			glog.V(3).Infof("Bucket %s not found: %s", bucketName, err.Error())
+			continue
+		}
 
-	startDate := time.Date(year, time.Month(((segment-1)*6)+1), 1, 0, 0, 0, 0, time.Local)
-	_, startWeek := startDate.ISOWeek()
-
-	err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, startDate, func(currentDate time.Time) int {
-		_, week := currentDate.ISOWeek()
-		a := week - startWeek
-		b := 53
-		return int(math.Max(float64((a%b+b)%b), 1))
-	})
-	return err
+		err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, start, func(currentDate time.Time) int {
+			_, week := currentDate.ISOWeek()
+			a := week - startWeek
+			b := 53
+			return int(math.Max(float64((a%b+b)%b), 1))
+		})
+		iter.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func CalculateQuarterlyPeriodV2(db *ebow.BowStorage, report *model.ReportResponse, allocFunc AllocationHandlerV2, year, segment int) error {
 	rowPrefix := "CP"
+	start, end, err := utils.PeriodToStartEndTime(year, segment, "YQ")
+	if err != nil {
+		return err
+	}
+
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return err
+	}
+
 	cpMeta, metaInfo, err := store.GetMetaInfo(db)
 	if err != nil {
 		return err
 	}
 
 	reportValues := ConvertToMeterMap(report)
+	_, startWeek := start.ISOWeek()
 
-	iter := db.GetLineRange(rowPrefix,
-		fmt.Sprintf("%.4d/%.2d/", year, ((segment-1)*3)+1),
-		fmt.Sprintf("%.4d/%.2d/", year, segment*3),
-	)
-	defer iter.Close()
+	for _, bucketName := range buckets {
+		iter, err := db.GetBucket(bucketName)
+		if err != nil {
+			glog.V(3).Infof("Bucket %s not found: %s", bucketName, err.Error())
+			continue
+		}
 
-	startDate := time.Date(year, time.Month(((segment-1)*3)+1), 1, 0, 0, 0, 0, time.Local)
-	_, startWeek := startDate.ISOWeek()
-
-	err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, startDate, func(currentDate time.Time) int {
-		_, week := currentDate.ISOWeek()
-		a := week - startWeek
-		b := 52
-		return int(math.Max(float64((a%b+b)%b), 1))
-	})
-	return err
+		err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, start, func(currentDate time.Time) int {
+			_, week := currentDate.ISOWeek()
+			a := week - startWeek
+			b := 52
+			return int(math.Max(float64((a%b+b)%b), 1))
+		})
+		iter.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func CalculateAnnualPeriodV2(db *ebow.BowStorage, report *model.ReportResponse, allocFunc AllocationHandlerV2, year int) error {
 	rowPrefix := "CP"
+	start, end, err := utils.PeriodToStartEndTime(year, 0, "Y")
+	if err != nil {
+		return err
+	}
+
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return err
+	}
+
 	cpMeta, metaInfo, err := store.GetMetaInfo(db)
 	if err != nil {
 		return err
 	}
 
 	reportValues := ConvertToMeterMap(report)
+	startMonth := start.Month()
 
-	iter := db.GetLinePrefix(fmt.Sprintf("%s/%d/", rowPrefix, year))
-	defer iter.Close()
+	for _, bucketName := range buckets {
+		iter, err := db.GetBucket(bucketName)
+		if err != nil {
+			glog.V(3).Infof("Bucket %s not found: %s", bucketName, err.Error())
+			continue
+		}
 
-	startDate := time.Date(year, time.Month(1), 1, 0, 0, 0, 0, time.Local)
-	startMonth := startDate.Month()
-
-	err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, startDate, func(currentDate time.Time) int {
-		month := currentDate.Month()
-		a := int(month - startMonth)
-		b := 12
-		return int(math.Max(float64((a%b+b)%b)+1, 1))
-	})
-	return err
+		err = calcParticipantReport(iter, &reportValues, allocFunc, cpMeta, metaInfo, rowPrefix, start, func(currentDate time.Time) int {
+			month := currentDate.Month()
+			a := int(month - startMonth)
+			b := 12
+			return int(math.Max(float64((a%b+b)%b)+1, 1))
+		})
+		iter.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func calcParticipantReport(iter ebow.IRange,

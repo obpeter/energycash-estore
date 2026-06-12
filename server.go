@@ -108,7 +108,7 @@ func main() {
 			glog.Fatalf("listen and serve returned err: %v", err)
 		}
 	}()
-
+	glog.Infof("server listening on http://0.0.0.0:%s", port)
 	<-quit
 	glog.Info("got interruption signal")
 	if err := server.Shutdown(context.Background()); err != nil {

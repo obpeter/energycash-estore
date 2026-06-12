@@ -246,43 +246,53 @@ func (er *EnergyRunner) run(db ebow.IBowStorage, f *excelize.File, start, end ti
 	sYear, sMonth, sDay := start.Year(), int(start.Month()), start.Day()
 	eYear, eMonth, eDay := end.Year(), int(end.Month()), end.Day()
 
-	iterCP := db.GetLineRange("CP", fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
-	defer iterCP.Close()
-
-	var _lineG1 model.RawSourceLine
-	g1Ok := iterCP.Next(&_lineG1)
-
-	if !g1Ok {
-		return nil, model.ErrNoEntries(errors.New("no Rows found"))
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return nil, err
 	}
 
 	sm := time.Now()
-	var pt *time.Time = nil
-	for g1Ok {
-		_, t, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.UTC)
-		if rowOk := utils.CheckTime(pt, t); !rowOk {
-			diff := ((t.Unix() - pt.Unix()) / (60 * 15)) - 1
-			if diff > 0 {
-				for i := int64(0); i < diff; i += 1 {
-					nTime := pt.Add(time.Minute * time.Duration(15*(int(i)+1)))
-					newId, _ := utils.ConvertUnixTimeToRowId("CP/", nTime)
-					fillLine := model.MakeRawSourceLine(newId,
-						rCxt.countCons*3, rCxt.countProd*2).Copy(rCxt.countCons * 3)
-					if err = er.handleLine(rCxt, &fillLine); err != nil {
-						return nil, err
+	for _, bucket := range buckets {
+
+		iterCP := db.GetLineRange(bucket, "CP", fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
+
+		var _lineG1 model.RawSourceLine
+		g1Ok := iterCP.Next(&_lineG1)
+
+		if !g1Ok {
+			iterCP.Close()
+			return nil, model.ErrNoEntries(errors.New("no Rows found"))
+		}
+
+		var pt *time.Time = nil
+		for g1Ok {
+			_, t, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.UTC)
+			if rowOk := utils.CheckTime(pt, t); !rowOk {
+				diff := ((t.Unix() - pt.Unix()) / (60 * 15)) - 1
+				if diff > 0 {
+					for i := int64(0); i < diff; i += 1 {
+						nTime := pt.Add(time.Minute * time.Duration(15*(int(i)+1)))
+						newId, _ := utils.ConvertUnixTimeToRowId("CP/", nTime)
+						fillLine := model.MakeRawSourceLine(newId,
+							rCxt.countCons*3, rCxt.countProd*2).Copy(rCxt.countCons * 3)
+						if err = er.handleLine(rCxt, &fillLine); err != nil {
+							iterCP.Close()
+							return nil, err
+						}
 					}
 				}
 			}
-		}
-		ct := time.Unix(t.Unix(), 0).UTC()
-		pt = &ct
+			ct := time.Unix(t.Unix(), 0).UTC()
+			pt = &ct
 
-		if err = er.handleLine(rCxt, &_lineG1); err != nil {
-			return nil, err
+			if err = er.handleLine(rCxt, &_lineG1); err != nil {
+				iterCP.Close()
+				return nil, err
+			}
+			g1Ok = iterCP.Next(&_lineG1)
 		}
-		g1Ok = iterCP.Next(&_lineG1)
+		iterCP.Close()
 	}
-
 	if err = er.closeSheets(rCxt); err != nil {
 		return nil, err
 	}
@@ -376,8 +386,8 @@ func addLine(ctx *RunnerContext, line *model.RawSourceLine, stylesQoV []int) []i
 }
 
 func addHeaderV2(ctx *RunnerContext, cellCon, cellProd int,
-	value func(meta *model.CounterPointMeta, p *ParticipantCp, cellOffset int) interface{},
-	style func(meta *model.CounterPointMeta, p *ParticipantCp, cellOffset int) int) []interface{} {
+		value func(meta *model.CounterPointMeta, p *ParticipantCp, cellOffset int) interface{},
+		style func(meta *model.CounterPointMeta, p *ParticipantCp, cellOffset int) int) []interface{} {
 	cCnt := 0
 	pCnt := 0
 	lineData := make([]interface{}, (ctx.countCons*cellCon)+(ctx.countProd*cellProd))

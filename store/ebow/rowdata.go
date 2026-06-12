@@ -3,7 +3,9 @@ package ebow
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"at.ourproject/energystore/model"
 	"github.com/golang/glog"
@@ -67,11 +69,12 @@ func (t *Turns) lock(name string) func() {
 type IBowStorage interface {
 	GetMeta(key string) (*model.RawSourceMeta, error)
 	SetMeta(line *model.RawSourceMeta) error
-	GetLineRange(bucket, key, until string) IRange
-	SetLines(line []*model.RawSourceLine) error
+	GetLineRange(bucket, prefix, key, until string) IRange
+	SetLines(bucket string, line []*model.RawSourceLine) error
 	GetLine(line *model.RawSourceLine) error
 	ListBuckets() ([]string, error)
 	GetTenant() string
+	FindBuckets(start, end int64) ([]string, error)
 }
 
 type BowStorage struct {
@@ -126,8 +129,8 @@ func (b *BowStorage) GetTenant() string {
 	return b.tenant
 }
 
-func (b *BowStorage) SetLines(line []*model.RawSourceLine) error {
-	return b.SetLinesRaw("rawdata", line)
+func (b *BowStorage) SetLines(bucket string, line []*model.RawSourceLine) error {
+	return b.SetLinesRaw(bucket, line)
 }
 
 func (b *BowStorage) SetLinesG2(line []*model.RawSourceLine) error {
@@ -175,8 +178,8 @@ func (b *BowStorage) GetLinePrefix(key string) *Iter {
 	return b.db.Bucket("rawdata").Prefix(key)
 }
 
-func (b *BowStorage) GetLineRange(bucket, key, until string) IRange {
-	return b.db.Bucket("rawdata").Range(fmt.Sprintf("%s/%s", bucket, key), fmt.Sprintf("%s/%s", bucket, until))
+func (b *BowStorage) GetLineRange(bucket, prefix, key, until string) IRange {
+	return b.db.Bucket(bucket).Range(fmt.Sprintf("%s/%s", prefix, key), fmt.Sprintf("%s/%s", prefix, until))
 }
 
 func (b *BowStorage) GetLine(line *model.RawSourceLine) error {
@@ -190,11 +193,49 @@ func (b *BowStorage) GetLineG3(line *model.RawSourceLine) error {
 }
 
 func (b *BowStorage) ListBuckets() ([]string, error) {
-	return b.db.Buckets(), nil
+	buckets := b.db.Buckets()
+	sort.Strings(buckets)
+	return buckets, nil
 }
 
 func (b *BowStorage) GetBucket(name string) (*Iter, error) {
 	return b.db.Bucket(name).Iter(), nil
+}
+
+func (b *BowStorage) FindBuckets(start, end int64) ([]string, error) {
+
+	monthStart := func(ts int64) time.Time {
+		t := time.UnixMilli(ts) //.In(time.UTC)
+		return time.Date(
+			t.Year(), t.Month(), 1,
+			0, 0, 0, 0,
+			t.Location(),
+		)
+	}
+
+	dbBuckets, err := b.ListBuckets()
+	if err != nil {
+		return nil, err
+	}
+
+	ts := monthStart(start)
+	tsEnd := monthStart(end).AddDate(0, 1, 0).Add(-time.Second)
+	buckets := []string{}
+	allBuckets := map[string]bool{}
+
+	for _, b := range dbBuckets {
+		allBuckets[b] = true
+	}
+
+	for ts.Before(tsEnd) {
+		bucketName := ts.Format("200601")
+		if _, ok := allBuckets[bucketName]; ok {
+			buckets = append(buckets, bucketName)
+		}
+		ts = ts.AddDate(0, 1, 0)
+	}
+	sort.Strings(buckets)
+	return buckets, nil
 }
 
 func GenerateCPKey(year int, month int) string {

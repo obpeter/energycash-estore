@@ -1,6 +1,6 @@
 
 persistence:
-  path: "../../../rawdata/test-converted/test"
+  path: "../../../rawdata/with-bucket"
 
 mqtt:
   host: "localhost:1883"

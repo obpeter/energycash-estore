@@ -1,20 +1,21 @@
 package excel
 
 import (
-	"at.ourproject/energystore/model"
-	"at.ourproject/energystore/store"
-	"at.ourproject/energystore/store/ebow"
-	"at.ourproject/energystore/utils"
 	"errors"
 	"fmt"
-	"github.com/golang/glog"
-	"github.com/xuri/excelize/v2"
 	"io"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"at.ourproject/energystore/model"
+	"at.ourproject/energystore/store"
+	"at.ourproject/energystore/store/ebow"
+	"at.ourproject/energystore/utils"
+	"github.com/golang/glog"
+	"github.com/xuri/excelize/v2"
 )
 
 var dateLine = regexp.MustCompile(`^[0-9]{2}.[0-9]{2}.[0-9]{4}\s[0-9]{2}:[0-9]{2}:[0-9]{2}$`)
@@ -220,7 +221,7 @@ func ImportExcelEnergyFile(f *excelize.File, sheet string, db *ebow.BowStorage) 
 		}
 	}
 	glog.Infof("Time taken via read file: %v (%d Rows)", time.Since(t), totalRowCols)
-	if err := db.SetLines(rawDatas); err != nil {
+	if err := db.SetLines("rawdata", rawDatas); err != nil {
 		return []int{}, err
 	}
 	if err := db.SetLinesG2(rawDatasG2); err != nil {
