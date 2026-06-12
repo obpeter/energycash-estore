@@ -11,7 +11,7 @@ import (
 	"github.com/golang/glog"
 )
 
-func StoreEnergyV2(db *ebow.BowStorage, meteringPoint string, data *model.MqttEnergy) error {
+func StoreEnergyV2(db *ebow.BowStorage, bucket, meteringPoint string, data *model.MqttEnergy) error {
 
 	defaultDirection := utils.ExamineDirection(data.Data)
 
@@ -42,7 +42,8 @@ func StoreEnergyV2(db *ebow.BowStorage, meteringPoint string, data *model.MqttEn
 	end := time.UnixMilli(data.End)
 
 	monitorStart := time.Now()
-	fetchSourceRange(db, "CP", begin.Local(), end.Local(), resources)
+
+	fetchSourceRange(db, bucket, "CP", begin.Local(), end.Local(), resources)
 	glog.V(4).Infof("Fetching source takes %v", time.Since(monitorStart).Milliseconds())
 
 	var err error
@@ -84,7 +85,7 @@ func StoreEnergyV2(db *ebow.BowStorage, meteringPoint string, data *model.MqttEn
 	})
 
 	monitorStart = time.Now()
-	err = db.SetLines(updated)
+	err = db.SetLines(bucket, updated)
 	glog.V(4).Infof("Writing source takes %v", time.Since(monitorStart).Milliseconds())
 
 	if err != nil {
@@ -92,6 +93,7 @@ func StoreEnergyV2(db *ebow.BowStorage, meteringPoint string, data *model.MqttEn
 		return err
 	}
 
+	// ToDo: check update metadata at the end
 	if c := updateMetaCP(metaCP, time.UnixMilli(data.Start), time.UnixMilli(data.End)); c {
 		err = updateMeta(db, metaCP, meteringPoint)
 	}
@@ -259,11 +261,11 @@ func addEnergyValueToResource(resource *model.RawSourceLine, metaCP *model.Count
 	}
 }
 
-func fetchSourceRange(db *ebow.BowStorage, key string, start, end time.Time, resources *map[string]*model.RawSourceLine) {
+func fetchSourceRange(db *ebow.BowStorage, bucket, key string, start, end time.Time, resources *map[string]*model.RawSourceLine) {
 	sYear, sMonth, sDay := start.Year(), int(start.Month()), start.Day()
 	eYear, eMonth, eDay := end.Year(), int(end.Month()), end.Day()
 
-	iter := db.GetLineRange(key, fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
+	iter := db.GetLineRange(bucket, key, fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
 	defer iter.Close()
 
 	var _line model.RawSourceLine

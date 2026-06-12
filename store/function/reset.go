@@ -1,11 +1,12 @@
 package function
 
 import (
+	"errors"
+	"fmt"
+
 	"at.ourproject/energystore/model"
 	"at.ourproject/energystore/store/ebow"
 	"at.ourproject/energystore/utils"
-	"errors"
-	"fmt"
 )
 
 func Reset(db ebow.IBowStorage, timeRange *DataTimeRange, meter string) error {
@@ -19,7 +20,7 @@ func Reset(db ebow.IBowStorage, timeRange *DataTimeRange, meter string) error {
 	}
 
 	var lines []*model.RawSourceLine
-	iter := db.GetLineRange("CP", timeRange.key, timeRange.until)
+	iter := db.GetLineRange("rawdata", "CP", timeRange.key, timeRange.until)
 	var _line model.RawSourceLine
 	var affected bool
 	for iter.Next(&_line) {
@@ -52,5 +53,5 @@ func Reset(db ebow.IBowStorage, timeRange *DataTimeRange, meter string) error {
 			fmt.Printf("L:%.3d ID: %s I:%.3d D:%v\n", i, meterMeta.Name, meterMeta.SourceIdx, line.Producers[meterMeta.SourceIdx*2:(meterMeta.SourceIdx*2)+2])
 		}
 	}
-	return db.SetLines(lines)
+	return db.SetLines("rawdata", lines)
 }

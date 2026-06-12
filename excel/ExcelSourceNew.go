@@ -1,15 +1,16 @@
 package excel
 
 import (
-	"at.ourproject/energystore/model"
-	"at.ourproject/energystore/store/ebow"
-	"at.ourproject/energystore/utils"
 	"fmt"
-	"github.com/golang/glog"
-	"github.com/xuri/excelize/v2"
 	"math"
 	"strings"
 	"time"
+
+	"at.ourproject/energystore/model"
+	"at.ourproject/energystore/store/ebow"
+	"at.ourproject/energystore/utils"
+	"github.com/golang/glog"
+	"github.com/xuri/excelize/v2"
 )
 
 func calcRawDataMatrixLen(a []float64, step int) int {
@@ -173,7 +174,7 @@ func ImportExcelEnergyFileNew(f *excelize.File, sheet string, db ebow.IBowStorag
 		rawDatas = append(rawDatas, v)
 	}
 
-	if err := db.SetLines(rawDatas); err != nil {
+	if err := db.SetLines("rawdata", rawDatas); err != nil {
 		return err
 	}
 

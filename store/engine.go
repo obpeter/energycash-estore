@@ -263,58 +263,66 @@ func (e *Engine) Query(tenant, ecid string, start, end time.Time) error {
 	sYear, sMonth, sDay := start.Year(), int(start.Month()), start.Day()
 	eYear, eMonth, eDay := end.Year(), int(end.Month()), end.Day()
 
-	iterCP := db.GetLineRange("CP", fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
-	defer iterCP.Close()
-
-	var _lineG1 model.RawSourceLine
-	g1Ok := iterCP.Next(&_lineG1)
-	if !g1Ok {
-		return ebow.ErrNoRows
-	}
-
-	_, lineStart, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.Local)
-	if err != nil {
-		return err
-	}
-	ctx, err := createEngineContext(db, *lineStart, end)
+	buckets, err := db.FindBuckets(start.UnixMilli(), end.UnixMilli())
 	if err != nil {
 		return err
 	}
 
-	err = e.Consumer.HandleStart(ctx)
-	if err != nil {
-		return err
-	}
+	for _, bucket := range buckets {
+		iterCP := db.GetLineRange(bucket, "CP", fmt.Sprintf("%.4d/%.2d/%.2d/", sYear, sMonth, sDay), fmt.Sprintf("%.4d/%.2d/%.2d/", eYear, eMonth, eDay))
+		defer iterCP.Close()
 
-	var pt *time.Time = nil
-	for g1Ok {
-		_, t, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.UTC)
-		if err != nil {
-			g1Ok = iterCP.Next(&_lineG1)
-			continue
+		var _lineG1 model.RawSourceLine
+		g1Ok := iterCP.Next(&_lineG1)
+		if !g1Ok {
+			return ebow.ErrNoRows
 		}
-		if rowOk := utils.CheckTime(pt, t); !rowOk {
-			diff := ((t.Unix() - pt.Unix()) / (60 * 15)) - 1
-			if diff > 0 {
-				for i := int64(0); i < diff; i += 1 {
-					nTime := pt.Add(time.Minute * time.Duration(15*(int(i)+1)))
-					newId, _ := utils.ConvertUnixTimeToRowId("CP/", nTime.Local())
-					fillLine := model.MakeRawSourceLine(newId,
-						ctx.countCons*3, ctx.countProd*2).Copy(ctx.countCons * 3)
-					if err = e.Consumer.HandleLine(ctx, &fillLine); err != nil {
-						return err
+
+		_, lineStart, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.Local)
+		if err != nil {
+			return err
+		}
+		ctx, err := createEngineContext(db, *lineStart, end)
+		if err != nil {
+			return err
+		}
+
+		err = e.Consumer.HandleStart(ctx)
+		if err != nil {
+			return err
+		}
+
+		var pt *time.Time = nil
+		for g1Ok {
+			_, t, err := utils.ConvertRowIdToTimeString("CP", _lineG1.Id, time.UTC)
+			if err != nil {
+				g1Ok = iterCP.Next(&_lineG1)
+				continue
+			}
+			if rowOk := utils.CheckTime(pt, t); !rowOk {
+				diff := ((t.Unix() - pt.Unix()) / (60 * 15)) - 1
+				if diff > 0 {
+					for i := int64(0); i < diff; i += 1 {
+						nTime := pt.Add(time.Minute * time.Duration(15*(int(i)+1)))
+						newId, _ := utils.ConvertUnixTimeToRowId("CP/", nTime.Local())
+						fillLine := model.MakeRawSourceLine(newId,
+							ctx.countCons*3, ctx.countProd*2).Copy(ctx.countCons * 3)
+						if err = e.Consumer.HandleLine(ctx, &fillLine); err != nil {
+							return err
+						}
 					}
 				}
 			}
-		}
-		ct := time.Unix(t.Unix(), 0).UTC()
-		pt = &ct
+			ct := time.Unix(t.Unix(), 0).UTC()
+			pt = &ct
 
-		if err = e.Consumer.HandleLine(ctx, &_lineG1); err != nil {
-			return err
+			if err = e.Consumer.HandleLine(ctx, &_lineG1); err != nil {
+				return err
+			}
+			g1Ok = iterCP.Next(&_lineG1)
 		}
-		g1Ok = iterCP.Next(&_lineG1)
+		err = e.Consumer.HandleEnd(ctx)
 	}
 
-	return e.Consumer.HandleEnd(ctx)
+	return err
 }
